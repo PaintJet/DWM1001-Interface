@@ -11,151 +11,165 @@
 # import required packages
 import rospy
 from std_msgs.msg import Float64
+from geometry_msgs.msg import Point
+
+# Import DWM1001 API
+from DWM1001_API import DWM1001
 
 import serial
 import time
 
-class TagSerialInterface:
+class TagPublisher:
 
     # Constructor
     # Name of the file that points to the tag (e.g. /dev/ttyACM0)
-    def __init__(self, tag_name):
+    def __init__(self, tag_name, tag_num):
         self.tag_name = tag_name
+        self.tag_num = tag_num
 
+        # Base topic path for messages relating to this tag
+        self.topic_string = "/uwb/" + str(tag_num) + "/"
 
-    # Callback function for joystick controls
-    def begin_comm(self):
-        # Create Serial object
-        self.ser = serial.Serial(self.tag_name, 115200, timeout=0)
+        # Initialize DWM API object
+        self.tag = DWM1001(tag_name)
 
-        # Writing two enters characters to tag to enter shell mode
-        self.ser.write(b'\r\r')
+        # Initialize serial communication with tag
+        self.tag.begin_comm()
 
-        # Close serial port in case it was not properly closed during last run
-        self.ser.close()
+        # Send command to start sending distances to nodes and position of tag
+        self.tag.lec()
 
-        time.sleep(1)
+        # Create dictionary containing the publishers for the tag
+        self.anchor_publishers = {}
+        # Create publisher for the position of the tag
+        self.pos_publisher = rospy.Publisher(self.topic_string + "position", Point, queue_size = 0)
 
-        # open serial port
-        self.ser.open()
+    def exit(self):
+        # Close serial communication to tag
+        self.tag.end_comm()
 
-        # Clear input buffer
-        self.ser.reset_input_buffer()
+    # parse_anchor_distances
+    # Converts lec CSV messages into better datatypes
+    # Returns the distances to anchors in a dictionary
+    # Returns a list of length 3 with the pose
+    def parse_anchor_distances(self, response_string):
+        response_list = response_string.split(",")
 
-    def end_comm(self):
-        # Write quit to tag to exit UWB module shell mode
-        self.ser.write(b'quit')
+        # Create dictionary to store range data from each anchor
+        anchor_ranges = {}
+        # Create array to store positiion data
+        pos = []
 
-        # Clear input buffer
-        self.ser.reset_input_buffer()
-        self.ser.reset_output_buffer()
+        # Check if data is empty or incorrectly formatted
+        # Perform validation by checking if the data begins with DIST
+        msg_valid = False
+        if(len(response_string) >= 6 and response_string[0:4] == "DIST"):
+            response_list = response_string.split(",")
 
-        self.ser.close()
+            # Extract number of anchors from which range data has been collected
+            num_anchors = int(response_list[1])
 
-        time.sleep(0.5)
+            # Verify length of message is correct for reported number of tags
+            # 2 is the number of elements not associated with anchors - DIST, NUM_ANCHORS
+            # These two elements appear at the beginning of the message
+            # Number of anchors is multiplied by 6 because each anchor has 6 associated datapoints
+            # 5 is the number of elements associated with the position if it is included in the message
+            # The message can take on exactly 1 or these 2 lengths
+            if(len(response_list) == 2 + 6*num_anchors or len(response_list) == 2 + 6*num_anchors + 5):
+                msg_valid = True
 
+        if(msg_valid):
 
+            for i in range(num_anchors):
+                # Calculate start index of anchor data in string
+                start_index = 6*i + 2
 
-    def read_anchor_distances(self):
-        # Reset input and output buffers
-        self.ser.reset_input_buffer()
-        self.ser.reset_output_buffer()
+                # start_index + 1 is unique ID of UWB anchor
+                # start_index + 5 is the distance to the anchor
+                anchor_ranges[response_list[start_index + 1]] = float(response_list[start_index + 5])
 
-        # Write lec command to serial buffer to request tag distances from module
-        msg = b'lec\r'
-        self.ser.write(msg)
+            # Get position of module if it is in response
+            try:
+                pos_index = response_list.index("POS")
 
+                # Collect and parse position data from the list
+                pos = [float(response_list[pos_index + 1]), float(response_list[pos_index + 2]), float(response_list[pos_index + 3])]
 
-        # time.sleep(0.5)
+            except(ValueError):
+                pass
+        else:
+            time.sleep(0.5)
 
-        #TODO include timeout
-        response = self.ser.readline()
-
-        # Wait until response with data is received
-        while not (response != "dwm> ".encode() and response.decode().strip() != msg.decode().strip() and response != "".encode()):
-            print(response.decode().strip())
-            response = self.ser.readline()
-            time.sleep(0.1)
-
-        print(response.decode().strip())
-        #TODO Handle
-
-        self.ser.write(b'lec\r')
-        time.sleep(0.01)
-
-        self.ser.reset_input_buffer()
-        self.ser.reset_output_buffer()
-
-        #TODO return data in array of dictionaries
-        # return data
-
-        # bl = 0
-
-        # while bl < 3:
-        #     response = ser.readline()
-        #     if response == "".encode():
-        #         bl = bl+1
-        #     time.sleep(0.2)
-        #     if :
-        #         # do whatever you want with this response
-        #         print(response.decode().strip())
-
-    # def read_tag_position(self):
-
-    # def end_comm(self):
+        return anchor_ranges, pos
 
 
 
+    def publish_tag_data(self):
+        # Get next line from tag
+        response_string = self.tag.read_response()
 
-tagNames = ["/dev/ttyACM0"]#, "/dev/ttyACM1", "/dev/ttyACM2", "/dev/ttyACM3"]
+        # Get anchor distances and position
+        anchor_distances, pos = self.parse_anchor_distances(response_string)
+
+        # If position is not empty
+        if(pos != []):
+            # Construct position message
+            pos_msg = Point()
+            pos_msg.x = pos[0]
+            pos_msg.y = pos[1]
+            pos_msg.z = pos[2]
+
+            # Publish position
+            self.pos_publisher.publish(pos_msg)
+
+        # Iterate over all anchors in anchor distances
+        for anchor_name, anchor_distance in anchor_distances.items():
+
+            # Check if we have previously published a distance for the given tag
+            if anchor_name in self.anchor_publishers:
+                # Publish to topic
+                self.anchor_publishers[anchor_name].publish(anchor_distance)
+            else: # Distance for this tag has not been previously published, create new publisher and publish
+                # Create new publisher
+                tag_topic = self.topic_string + "{anchor_name}/distance".format(anchor_name = anchor_name)
+                self.anchor_publishers[anchor_name] = rospy.Publisher(tag_topic, Float64, queue_size=0)
+
+                # Publish to topic
+                self.anchor_publishers[anchor_name].publish(anchor_distance)
+
+
+
+
+
+tag_names = ["/dev/ttyACM0"]#, "/dev/ttyACM1", "/dev/ttyACM2", "/dev/ttyACM3"]
 
 
 if __name__ == '__main__':
 
-    # # Initialize as ROS node
-    # # rospy.init_node('uwb_tag_publisher')
+    # Initialize as ROS node
+    rospy.init_node('uwb_tag_publisher')
 
     # List to store serial tag interface objects for each tag
-    tagInterfaces = []
+    tags = []
 
     # Populate list with tag interfaces
-    for tag in tagNames:
-        tagInterfaces.append(TagSerialInterface(tag))
+    for i, tag_name in enumerate(tag_names):
+        tags.append(TagPublisher(tag_name, i))
 
-    # Initialize UART communication for all tags
-    for tag in tagInterfaces:
-        tag.begin_comm()
-        tag.read_anchor_distances()
-        tag.end_comm()
+    # Ready to go
+    rospy.loginfo("UWB Module Publisher Initialized...")
+    time.sleep(2)
 
+    r = rospy.Rate(10) # 10hz
+    while not rospy.is_shutdown():
+        # Publish tag data
+        for tag in tags:
+            tag.publish_tag_data()
 
-
-    # # Create list of dictionaries for publishers for all tags
-    # # Each dictionary stores the publsihers related to each tag
-    # tagPublishers = [{} for tag in tagNames]
-
-    # # Ready to go
-    # rospy.loginfo("UWB Module Publisher Initialized...")
-
-    # while not rospy.is_shutdown():
-    #     # Publish distances to each anchor for each tag
-    #     for tag_num, (tag, publishers) in enumerate(zip(tagInterfaces, tagPublishers)):
-    #         # Get the anchor distances
-    #         anchor_distances = tag.read_anchor_distances()
-
-    #         # Iterate over all anchors in anchor distances
-    #         for anchor_name, anchor_distance in anchor_distances.items():
-
-    #             # Check if we have previously published a distance for the given tag
-    #             if anchor_name in publishers:
-    #                 publishers[anchor_name].publish(anchor_distance)
-    #             else:
-    #                 tag_topic = "/uwb/tag_{tag_num}/{anchor_name}/distance".format(
-    #                     tag_num = tag_num,
-    #                     anchor_number = anchor_name
-    #                 )
-    #                 publishers[anchor_name] = rospy.Publisher(tag_topic, Float64, queue_size=0)
+        r.sleep()
 
 
-    #     # Loop continuously
-    #     rospy.spin()
+
+
+    # Loop continuously
+    rospy.spin()
