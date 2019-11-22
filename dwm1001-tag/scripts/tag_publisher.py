@@ -16,7 +16,6 @@ from geometry_msgs.msg import Point
 # Import DWM1001 API
 from DWM1001_API import DWM1001
 
-import serial
 import time
 
 class TagPublisher:
@@ -85,8 +84,14 @@ class TagPublisher:
                 start_index = 6*i + 2
 
                 # start_index + 1 is unique ID of UWB anchor
+                # start_index + [2-4] are the x,y,z coordinates of the anchors
                 # start_index + 5 is the distance to the anchor
-                anchor_ranges[response_list[start_index + 1]] = float(response_list[start_index + 5])
+                anchor_ranges[response_list[start_index + 1]] = {
+                    "distance" : float(response_list[start_index + 5]),
+                    "x" : float(response_list[start_index + 2]),
+                    "y" : float(response_list[start_index + 3]),
+                    "z" : float(response_list[start_index + 4])
+                }
 
             # Get position of module if it is in response
             try:
@@ -109,7 +114,7 @@ class TagPublisher:
         response_string = self.tag.read_response()
 
         # Get anchor distances and position
-        anchor_distances, pos = self.parse_anchor_distances(response_string)
+        anchors_data, pos = self.parse_anchor_distances(response_string)
 
         # If position is not empty
         if(pos != []):
@@ -123,19 +128,29 @@ class TagPublisher:
             self.pos_publisher.publish(pos_msg)
 
         # Iterate over all anchors in anchor distances
-        for anchor_name, anchor_distance in anchor_distances.items():
+        for anchor_name, anchor_data in anchors_data.items():
 
             # Check if we have previously published a distance for the given tag
-            if anchor_name in self.anchor_publishers:
-                # Publish to topic
-                self.anchor_publishers[anchor_name].publish(anchor_distance)
-            else: # Distance for this tag has not been previously published, create new publisher and publish
+            if not (anchor_name in self.anchor_publishers):
+                # Distance for this tag has not been previously published, create new publishers
                 # Create new publisher
-                tag_topic = self.topic_string + "{anchor_name}/distance".format(anchor_name = anchor_name)
-                self.anchor_publishers[anchor_name] = rospy.Publisher(tag_topic, Float64, queue_size=0)
+                tag_distance_topic = self.topic_string + "/anchors/{anchor_name}/distance".format(anchor_name = anchor_name)
+                tag_position_topic = self.topic_string + "/anchors/{anchor_name}/position".format(anchor_name = anchor_name)
+                self.anchor_publishers[anchor_name] = {
+                    "distance" : rospy.Publisher(tag_distance_topic, Float64, queue_size=0),
+                    "position" : rospy.Publisher(tag_position_topic, Point, queue_size=0)
 
-                # Publish to topic
-                self.anchor_publishers[anchor_name].publish(anchor_distance)
+                }
+
+             # Publish to distance to topic
+            self.anchor_publishers[anchor_name]["distance"].publish(anchor_data["distance"])
+
+            # Publish position of marker to topic
+            pos_msg = Point()
+            pos_msg.x = anchor_data["x"]
+            pos_msg.y = anchor_data["y"]
+            pos_msg.z = anchor_data["z"]
+            self.anchor_publishers[anchor_name]["position"].publish()
 
 
 
