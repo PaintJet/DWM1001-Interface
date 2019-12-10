@@ -18,35 +18,61 @@ class DWM1001:
     def __init__(self, tag_name):
         self.tag_name = tag_name
 
+    def __del__(self):
+        self.end_comm()
+
     # read_response
     # Reads a message sent by UWB module
     # return : string containing a line (ended by \n) of the serial output of DWM1001 module
     def read_response(self):
         response = self.ser.readline()
-
+	print(response)
         return response.decode().strip()
 
     def begin_comm(self):
+	print("Initializing Communication with tag {}".format(self.tag_name))
+
         # Create Serial object
-        self.ser = serial.Serial(self.tag_name, 115200, timeout=0)
+        self.ser = serial.Serial(
+	     port = self.tag_name,
+             baudrate =  115200,
+             parity = serial.PARITY_ODD,
+             stopbits = serial.STOPBITS_TWO,
+             bytesize = serial.SEVENBITS)
 
         # Close serial port in case it was not properly closed during last run
         self.ser.close()
 
-        time.sleep(1)
+        time.sleep(2)
 
         # open serial port
         self.ser.open()
 
+	time.sleep(2)
+
+        # Clear serial buffer
+	self.ser.reset_input_buffer()
+	self.ser.reset_output_buffer()
+
         # Writing two enters characters to tag to enter shell mode
-        self.double_enter()
+	response = None
+	while(response != "dwm>"):
+		self.double_enter()
+		time.sleep(0.2)
+		response = self.read_response()
+	time.sleep(0.2)
+
+	print("Successfully Initialized tag {}".format(self.tag_name))
 
         # Clear input buffer
         self.ser.reset_input_buffer()
+	self.ser.reset_output_buffer()
 
     def end_comm(self):
         # Reset tag to stop data transmission and exit shell mode
         self.reset()
+
+        time.sleep(0.5)
 
         # Clear input buffer
         self.ser.reset_input_buffer()
@@ -64,7 +90,7 @@ class DWM1001:
         self.ser.write(b'\r\r')
 
     # ASCII char for single enter
-    def double_enter(self):
+    def enter(self):
         self.ser.write(b'\r')
 
     # Display help

@@ -16,7 +16,7 @@ from geometry_msgs.msg import Point
 # Import DWM1001 API
 from DWM1001_API import DWM1001
 
-import time
+import time, os
 
 class TagPublisher:
 
@@ -26,8 +26,10 @@ class TagPublisher:
         self.tag_name = tag_name
         self.tag_num = tag_num
 
+	os.popen("sudo chmod 777 {}".format(tag_name), "w")
+
         # Base topic path for messages relating to this tag
-        self.topic_string = "/uwb/" + str(tag_num) + "/"
+        self.topic_string = "/uwb/" + str(tag_num) 
 
         # Initialize DWM API object
         self.tag = DWM1001(tag_name)
@@ -41,7 +43,7 @@ class TagPublisher:
         # Create dictionary containing the publishers for the tag
         self.anchor_publishers = {}
         # Create publisher for the position of the tag
-        self.pos_publisher = rospy.Publisher(self.topic_string + "position", Point, queue_size = 0)
+        self.pos_publisher = rospy.Publisher(self.topic_string + "/position", Point, queue_size = 0)
 
     def exit(self):
         # Close serial communication to tag
@@ -112,7 +114,7 @@ class TagPublisher:
     def publish_tag_data(self):
         # Get next line from tag
         response_string = self.tag.read_response()
-
+	
         # Get anchor distances and position
         anchors_data, pos = self.parse_anchor_distances(response_string)
 
@@ -156,7 +158,7 @@ class TagPublisher:
 
 
 
-tag_names = ["/dev/ttyACM0"]#, "/dev/ttyACM1", "/dev/ttyACM2", "/dev/ttyACM3"]
+tag_names = ["/dev/ttyACM0", "/dev/ttyACM1"] # "/dev/ttyACM2"]
 
 
 if __name__ == '__main__':
@@ -175,14 +177,13 @@ if __name__ == '__main__':
     rospy.loginfo("UWB Module Publisher Initialized...")
     time.sleep(2)
 
-    r = rospy.Rate(10) # 10hz
+    r = rospy.Rate(100) # 10hz
     while not rospy.is_shutdown():
         # Publish tag data
         for tag in tags:
             tag.publish_tag_data()
 
         r.sleep()
-
 
 
 
