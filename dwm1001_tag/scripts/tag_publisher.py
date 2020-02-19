@@ -11,6 +11,7 @@
 # import required packages
 import rospy
 from std_msgs.msg import Float64
+from dwm1001_tag.msg import UWBReading, UWBReadingArray
 from geometry_msgs.msg import Point
 
 # Import DWM1001 API
@@ -23,13 +24,15 @@ class TagPublisher:
     # Constructor
     # Name of the file that points to the tag (e.g. /dev/ttyACM0)
     def __init__(self, tag_name, tag_num):
+        self.seq = 0
+
         self.tag_name = tag_name
         self.tag_num = tag_num
 
-	os.popen("sudo chmod 777 {}".format(tag_name), "w")
+	    # os.popen("sudo chmod 777 {}".format(tag_name), "w")
 
         # Base topic path for messages relating to this tag
-        self.topic_string = "/uwb/" + str(tag_num) 
+        self.topic_string = "/uwb/" + str(tag_num)
 
         # Initialize DWM API object
         self.tag = DWM1001(tag_name)
@@ -41,7 +44,8 @@ class TagPublisher:
         self.tag.lec()
 
         # Create dictionary containing the publishers for the tag
-        self.anchor_publishers = {}
+        self.reading_publisher = rospy.Publisher(self.topic_string + "/readings", UWBReadingArray, queue_size = 0)
+
         # Create publisher for the position of the tag
         self.pos_publisher = rospy.Publisher(self.topic_string + "/position", Point, queue_size = 0)
 
@@ -68,16 +72,18 @@ class TagPublisher:
             response_list = response_string.split(",")
 
             # Extract number of anchors from which range data has been collected
-            num_anchors = int(response_list[1])
-
-            # Verify length of message is correct for reported number of tags
-            # 2 is the number of elements not associated with anchors - DIST, NUM_ANCHORS
-            # These two elements appear at the beginning of the message
-            # Number of anchors is multiplied by 6 because each anchor has 6 associated datapoints
-            # 5 is the number of elements associated with the position if it is included in the message
-            # The message can take on exactly 1 or these 2 lengths
-            if(len(response_list) == 2 + 6*num_anchors or len(response_list) == 2 + 6*num_anchors + 5):
-                msg_valid = True
+            try:
+                num_anchors = int(response_list[1])
+                # Verify length of message is correct for reported number of tags
+                # 2 is the number of elements not associated with anchors - DIST, NUM_ANCHORS
+                # These two elements appear at the beginning of the message
+                # Number of anchors is multiplied by 6 because each anchor has 6 associated datapoints
+                # 5 is the number of elements associated with the position if it is included in the message
+                # The message can take on exactly 1 or these 2 lengths
+                if(len(response_list) == 2 + 6*num_anchors or len(response_list) == 2 + 6*num_anchors + 5):
+                    msg_valid = True
+            except:
+                msg_valid = False
 
         if(msg_valid):
 
@@ -112,9 +118,18 @@ class TagPublisher:
 
 
     def publish_tag_data(self):
+        msg = UWBReadingArray()
+
+        # Populate header
+        msg.header.seq = self.seq
+        msg.header.frame_id = "map"
+        msg.header.stamp = rospy.Time.now()
+
+
+
         # Get next line from tag
         response_string = self.tag.read_response()
-	
+
         # Get anchor distances and position
         anchors_data, pos = self.parse_anchor_distances(response_string)
 
@@ -129,42 +144,62 @@ class TagPublisher:
             # Publish position
             self.pos_publisher.publish(pos_msg)
 
+        readings = [None] * len(anchors_data)
+
         # Iterate over all anchors in anchor distances
-        for anchor_name, anchor_data in anchors_data.items():
+        for i, (anchor_name, anchor_data) in enumerate(anchors_data.items()):
+            readings[i] = UWBReading()
+
+            # Write the name of the anchor
+            readings[i].anchor_id = anchor_name
+            # Write the distance to the anchor
+            readings[i].anchor_range = anchor_data["distance"]
+            # Write the coordinates of the UWB module
+            readings[i].anchor_position.x = anchor_data["x"]
+            readings[i].anchor_position.y = anchor_data["y"]
+            readings[i].anchor_position.z = anchor_data["z"]
+
+
 
             # Check if we have previously published a distance for the given tag
-            if not (anchor_name in self.anchor_publishers):
-                # Distance for this tag has not been previously published, create new publishers
-                # Create new publisher
-                tag_distance_topic = self.topic_string + "/anchors/{anchor_name}/distance".format(anchor_name = anchor_name)
-                tag_position_topic = self.topic_string + "/anchors/{anchor_name}/position".format(anchor_name = anchor_name)
-                self.anchor_publishers[anchor_name] = {
-                    "distance" : rospy.Publisher(tag_distance_topic, Float64, queue_size=0),
-                    "position" : rospy.Publisher(tag_position_topic, Point, queue_size=0)
+            # if not (anchor_name in self.anchor_publishers):
+            #     # Distance for this tag has not been previously published, create new publishers
+            #     # Create new publisher
+            #     tag_distance_topic = self.topic_string + "/anchors/{anchor_name}/distance".format(anchor_name = anchor_name)
+            #     tag_position_topic = self.topic_string + "/anchors/{anchor_name}/position".format(anchor_name = anchor_name)
+            #     self.anchor_publishers[anchor_name] = {
+            #         "distance" : rospy.Publisher(tag_distance_topic, Float64, queue_size=0),
+            #         "position" : rospy.Publisher(tag_position_topic, Point, queue_size=0)
 
-                }
+            #     }
 
              # Publish to distance to topic
-            self.anchor_publishers[anchor_name]["distance"].publish(anchor_data["distance"])
+            # self.anchor_publishers[anchor_name]["distance"].publish(anchor_data["distance"])
 
             # Publish position of marker to topic
-            pos_msg = Point()
-            pos_msg.x = anchor_data["x"]
-            pos_msg.y = anchor_data["y"]
-            pos_msg.z = anchor_data["z"]
-            self.anchor_publishers[anchor_name]["position"].publish()
+            # pos_msg = Point()
+            # pos_msg.x = anchor_data["x"]
+            # pos_msg.y = anchor_data["y"]
+            # pos_msg.z = anchor_data["z"]
+            # self.anchor_publishers[anchor_name]["position"].publish()
+        msg.readings = readings
+
+        # Publish message with all data
+        self.reading_publisher.publish(msg)
 
 
 
 
 
-tag_names = ["/dev/ttyACM0", "/dev/ttyACM1"] # "/dev/ttyACM2"]
+
 
 
 if __name__ == '__main__':
 
     # Initialize as ROS node
     rospy.init_node('uwb_tag_publisher')
+
+    tag_names = [rospy.get_param('~tag_1_path'), rospy.get_param('~tag_2_path'), rospy.get_param('~tag_3_path')]
 
     # List to store serial tag interface objects for each tag
     tags = []
