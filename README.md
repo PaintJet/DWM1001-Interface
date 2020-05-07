@@ -33,3 +33,7 @@ float32 anchor_range - Distance measurement to the anchor
 #### UWBReadingArray
 Header header
 dwm1001_tag/UWBReading[] readings - Array of UWBReadings
+
+
+## Next Steps
+The next steps would be to implement an API to configure the anchors. This should be fairly easy as we have already defined a python API for communicating with the modules. You simply have to run the correct commands to configure the anchor.
